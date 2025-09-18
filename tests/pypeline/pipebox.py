@@ -248,11 +248,19 @@ class DictModel(Model):
         # We serialize already as json
         return True
 
+    @classmethod
+    def model_name(cls) -> str:
+        return "model.yml"
+
     def serialize(self):
         return yaml.safe_dump(self._data).encode()
 
     def deserialize(self, data: bytes):
         self._data = yaml.safe_load(data) or {}
+
+    @classmethod
+    def mime_type(cls) -> str:
+        return "application/x-yaml"
 
     def __repr__(self):
         return f"DictModel({self._data!r})"

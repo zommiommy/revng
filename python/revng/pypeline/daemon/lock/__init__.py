@@ -7,7 +7,8 @@ import asyncio
 from typing import Any
 from abc import ABC, abstractmethod
 
-from revng.internal.daemon2.utils import ProjectID, Epoch
+from revng.pypeline.storage.storage_provider import ProjectID
+from revng.pypeline.daemon.utils import Epoch
 
 logger = logging.getLogger(__name__)
 

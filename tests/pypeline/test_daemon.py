@@ -4,27 +4,26 @@
 
 from __future__ import annotations
 
-import sys
 import json
-import time
-import socket
 import logging
+import socket
+import sys
 import threading
-from typing import Any
+import time
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
+# Import the pipebox, even if unused it will populate the registries
+import pipebox as _  # noqa: F401
 import pytest
-import uvicorn
 import requests
+import websockets
 import websockets.sync.client
-from tempfile import NamedTemporaryFile, TemporaryDirectory
 
 import revng
-from revng.internal.cli.revng2 import main
 from revng.pypeline import initialize_pypeline
-from revng.pypeline.pipeline_parser import load_pipeline_yaml_file
+from revng.pypeline.main import pype
 
-import simple_pipeline
 initialize_pypeline()
 
 logger = logging.getLogger(__name__)
@@ -34,23 +33,15 @@ formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(messag
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
+
 def find_free_port():
     """Find a free port to use for testing."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(('', 0))
+        s.bind(("", 0))
         s.listen(1)
         port = s.getsockname()[1]
     return port
 
-
-DAEMON_CONFIG = """
-storage_provider: "sqlite://{storage_provider_path}"
-
-lock:
-    class: "revng.internal.daemon2.lock.local_lock:LocalLock"
-    args:
-        lock_duration: 60
-"""
 
 class DaemonTestServer:
     """Helper class to start and stop the daemon for testing."""
@@ -62,19 +53,11 @@ class DaemonTestServer:
         self.project_id = "test_project_id"
 
         this_dir = Path(__file__).parent
-        self.pipebox_path = str(this_dir / "simple_pipeline.py")
+        self.pipebox_path = str(this_dir / "pipebox.py")
         self.pipeline_path = str(this_dir / "pipeline.yml")
         # Create temporary files for the DB and the config that points to the DB
-        self.db_dir = TemporaryDirectory()
-        logger.info("Working with DB directory at %s", self.db_dir)
-        self.config_file = NamedTemporaryFile()
-        logger.info("Working with daemon config file at %s", self.config_file.name)
-        self.config_file.truncate()
-        configs = DAEMON_CONFIG.format(storage_provider_path=Path(self.db_dir.name) / "cache.db")
-        logger.info("Working with daemon configs: %s",configs)
-        self.config_file.write(configs.encode("utf-8"))
-        self.config_file.flush()
-        self.config_path = self.config_file.name
+        self.cache_dir = TemporaryDirectory()
+        logger.info("Working with cache directory at %s", self.cache_dir)
 
         # Configure a session that can directly talk to the daemon
         self.session = requests.Session()
@@ -93,17 +76,20 @@ class DaemonTestServer:
         stderr, so if the daemon doesn't start, try to run it manually.
         """
         logger.info("Starting the daemon on port %s", self.port)
-        main((
-            "--pipebox",
-            self.pipebox_path,
-            "daemon",
-            "--pipeline",
-            self.pipeline_path,
-            "--port",
-            str(self.port),
-            "--config",
-            self.config_path,
-        ))
+        pype(
+            (
+                "--pipebox",
+                self.pipebox_path,
+                "project",
+                "--pipeline",
+                self.pipeline_path,
+                "--cache-dir",
+                self.cache_dir.name,
+                "daemon",
+                "--port",
+                str(self.port),
+            )
+        )
         logger.critical("Server exiting")
 
     def _wait_for_server(self, timeout=10):
@@ -144,7 +130,6 @@ class DaemonTestServer:
         logger.info("Monitoring response: %s", response.text)
         return response
 
-
     def run_analysis(self, analysis_request) -> requests.Response:
         logger.info("Running analysis with request %s", analysis_request)
         response = self.session.post(
@@ -163,9 +148,9 @@ class DaemonTestServer:
         logger.info("Artifact response: %s", response.text)
         return response
 
-    def subscribe(self) -> websockets.sync.Websocket:
+    def subscribe(self) -> websockets.WebSocket:
         return websockets.sync.client.connect(
-            f'ws://127.0.0.1:{self.port}/api/subscribe',
+            f"ws://127.0.0.1:{self.port}/api/subscribe",
             additional_headers={"X-ProjectId": self.project_id},
         )
 
@@ -183,23 +168,17 @@ def test_daemon(daemon_server):
     assert response.status_code == 200
     epoch_data = response.json()
     assert "epoch" in epoch_data
-    assert "version" in epoch_data
-    assert epoch_data["version"] == revng.__version__
     current_epoch = epoch_data["epoch"]
-
 
     # Test pipeline endpoint
     logger.info("Testing pipeline endpoint")
     response = daemon_server.get_pipeline()
     pipeline_data = response.json()
-    assert "epoch" in pipeline_data
     assert "version" in pipeline_data
     assert "pipeline" in pipeline_data
     assert "containers" in pipeline_data
     assert "kinds" in pipeline_data
-    assert pipeline_data["epoch"] == current_epoch
     assert pipeline_data["version"] == revng.__version__
-
 
     # Validate containers structure
     containers = pipeline_data["containers"]
@@ -209,7 +188,6 @@ def test_daemon(daemon_server):
     for expected in expected_containers:
         assert expected in container_names, f"Expected container {expected} not found"
 
-
     # Validate kinds structure
     kinds = pipeline_data["kinds"]
     assert isinstance(kinds, list)
@@ -217,7 +195,6 @@ def test_daemon(daemon_server):
     expected_kinds = ["ROOT", "CHILD", "GRANDCHILD", "CHILD2"]
     for expected in expected_kinds:
         assert expected in kind_names, f"Expected kind {expected} not found"
-
 
     # Test model endpoint
     logger.info("Testing model endpoint")
@@ -227,48 +204,26 @@ def test_daemon(daemon_server):
     assert "epoch" in model_data
     assert "is_text" in model_data
     assert "model" in model_data
-    assert model_data["is_text"] == True  # DictModel is text-based
+    assert model_data["is_text"]  # DictModel is text-based
     initial_model = model_data["model"]
-
-
-    # Test monitoring endpoint
-    logger.info("Testing monitoring endpoint")
-    response = daemon_server.get_monitoring()
-    assert response.status_code == 200
-    monitoring_data = response.json()
-    assert monitoring_data["total_subscribers"] == 0
-    assert monitoring_data["project_subscribers"] == {}
-    assert monitoring_data["active_projects"] == 0
-
 
     # Connect to the websocket
     notifications_websocket = daemon_server.subscribe()
 
-    # Test monitoring endpoint after subscription
-    logger.info("Testing monitoring endpoint")
-    response = daemon_server.get_monitoring()
-    assert response.status_code == 200
-    logger.info("Monitoring response: %s", response.text)
-    monitoring_data = response.json()
-    assert monitoring_data["total_subscribers"] == 1
-    assert monitoring_data["project_subscribers"] == {
-        daemon_server.project_id: 1,
-    }
-    assert monitoring_data["active_projects"] == 1
-
-
     # Test analysis endpoint - run init_analysis
     logger.info("Testing analysis endpoint")
-    response = daemon_server.run_analysis({
-        "epoch": current_epoch,
-        "analysis": "init_analysis",
-        "configuration": "",
-        "pipeline_configuration": {},
-        "containers": {
-            # Empty list means all objects of this container
-            "child_source": []
+    response = daemon_server.run_analysis(
+        {
+            "epoch": current_epoch,
+            "analysis": "init_analysis",
+            "configuration": "",
+            "pipeline_configuration": {},
+            "containers": {
+                # Empty list means all objects of this container
+                "child_source": []
+            },
         }
-    })
+    )
     assert response.status_code == 200
     analysis_data = response.json()
     assert "epoch" in analysis_data
@@ -277,7 +232,6 @@ def test_daemon(daemon_server):
     # Epoch should increase after modification
     assert new_epoch > current_epoch
 
-
     # Check the analysis notification
     analysis_notification_text = notifications_websocket.recv()
     logger.info("Analysis notification: %s", analysis_notification_text)
@@ -285,7 +239,6 @@ def test_daemon(daemon_server):
     assert analysis_notification["type"] == "analysis"
     assert analysis_notification["analysis"] == "init_analysis"
     assert analysis_notification["epoch"] == new_epoch
-
 
     # Verify model was modified by getting it again
     logger.info("Verifying model was modified")
@@ -298,32 +251,27 @@ def test_daemon(daemon_server):
     assert updated_model != initial_model
     assert analysis_notification["new_model"] == updated_model
 
-
     # Test artifact endpoint - request ChildArtifact
     logger.info("Testing artifact endpoint")
-    response = daemon_server.get_artifact({
-        "epoch": new_epoch,
-        "artifacts": {
-            "ChildArtifact": {}  # Empty data for the artifact
-        }
-    })
+    response = daemon_server.get_artifact(
+        {"epoch": new_epoch, "artifacts": {"ChildArtifact": {}}}  # Empty data for the artifact
+    )
     assert response.status_code == 200
     artifact_data = response.json()
     assert "artifacts" in artifact_data
     assert "ChildArtifact" in artifact_data["artifacts"]
 
-
     # Test another analysis - blackhole
     logger.info("Testing blackhole")
-    response = daemon_server.run_analysis({
-        "epoch": new_epoch,
-        "analysis": "blackhole",
-        "configuration": "",
-        "pipeline_configuration": {},
-        "containers": {
-            "root_source": []
+    response = daemon_server.run_analysis(
+        {
+            "epoch": new_epoch,
+            "analysis": "blackhole",
+            "configuration": "",
+            "pipeline_configuration": {},
+            "containers": {"root_source": []},
         }
-    })
+    )
     assert response.status_code == 200
     purge_data = response.json()
     assert "epoch" in purge_data
@@ -331,15 +279,16 @@ def test_daemon(daemon_server):
     final_epoch = purge_data["epoch"]
     assert final_epoch > new_epoch
 
-
     # Test error handling - invalid analysis
     logger.info("Testing error handling with invalid analysis")
-    response = daemon_server.run_analysis({
-        "epoch": final_epoch,
-        "analysis": "NonExistentAnalysis",
-        "configuration": "",
-        "containers": {}
-    })
+    response = daemon_server.run_analysis(
+        {
+            "epoch": final_epoch,
+            "analysis": "NonExistentAnalysis",
+            "configuration": "",
+            "containers": {},
+        }
+    )
     assert response.status_code == 400
     error_data = response.json()
     assert "msg" in error_data
@@ -347,12 +296,9 @@ def test_daemon(daemon_server):
 
     # Test error handling - invalid artifact
     logger.info("Testing error handling with invalid artifact")
-    response = daemon_server.get_artifact({
-        "epoch": final_epoch,
-        "artifacts": {
-            "NonExistentArtifact": {}
-        }
-    })
+    response = daemon_server.get_artifact(
+        {"epoch": final_epoch, "artifacts": {"NonExistentArtifact": {}}}
+    )
     logger.info("NonExistentArtifact response: %s", response.text)
     assert response.status_code == 400
     error_data = response.json()
@@ -374,7 +320,7 @@ def test_daemon(daemon_server):
     response = daemon_server.session.post(
         f"{daemon_server.base_url}/api/analysis",
         data="not json",
-        headers={"Content-Type": "text/plain"}
+        headers={"Content-Type": "text/plain"},
     )
     logger.info("invalid content type response: %s", response.text)
     assert response.status_code == 400

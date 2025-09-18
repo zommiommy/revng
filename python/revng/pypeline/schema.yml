@@ -1,0 +1,664 @@
+#
+# This file is distributed under the MIT License. See LICENSE.md for details.
+#
+
+$schema: http://json-schema.org/draft-07/schema#
+title: Pipeline and API Schema
+
+$defs:
+    # Pipeline-specific definitions (pipeline_parser.py)
+    pipeline:
+        type: object
+        required:
+            - containers
+            - branches
+        additionalProperties: false
+        properties:
+            containers:
+                type: array
+                uniqueItems: true
+                items:
+                    $ref: "#/$defs/pipeline_container_decl"
+            branches:
+                type: object
+                required:
+                    - root
+                patternProperties:
+                    ^[a-zA-Z0-9_]+$:
+                        type: object
+                        required:
+                            - tasks
+                        additionalProperties: false
+                        properties:
+                            from:
+                                type: string
+                                description: The current branch will start from the end of the given branch.
+                                example: root
+                            tasks:
+                                type: array
+                                items:
+                                    anyOf:
+                                        - $ref: "#/$defs/pipeline_pipe"
+                                        - $ref: "#/$defs/pipeline_savepoint"
+                                description: A list of tasks in the branch, each task is a pipe.
+                                minItems: 1
+    pipeline_container_decl:
+        type: object
+        required:
+            - name
+            - type
+        additionalProperties: false
+        properties:
+            name:
+                type: string
+                description: The name of the container.
+                example: my_container
+            type:
+                type: string
+                description: The type of the container.
+                example: llvm_module
+
+    pipeline_args:
+        type: array
+        items:
+            type: string
+        description: A list of container names that cannot be empty.
+        example:
+            - container1
+            - container2
+        minItems: 1
+
+    pipeline_pipe:
+        type: object
+        additionalProperties: false
+        required:
+            - pipe
+            - arguments
+        properties:
+            name:
+                type: string
+                description: The name of the pipe task.
+                example: my_pipe_task
+            pipe:
+                type: string
+                description: The name of the pipe.
+                example: my_pipe
+            configuration:
+                type: string
+                description: The static configuration for the pipe, if any.
+                default: ""
+                example: intel_asm=1
+            arguments:
+                $ref: "#/$defs/pipeline_args"
+                description: The names of the containers to pass to the pipe.
+            artifacts:
+                type: array
+                items:
+                    $ref: "#/$defs/pipeline_artifact"
+                minItems: 1
+            analyses:
+                type: array
+                items:
+                    $ref: "#/$defs/pipeline_analysis"
+                minItems: 1
+
+    pipeline_savepoint:
+        type: object
+        required:
+            - savepoint
+            - containers
+        additionalProperties: false
+        properties:
+            savepoint:
+                type: string
+                description: The name of the savepoint.
+            containers:
+                $ref: "#/$defs/pipeline_args"
+                description: The names of the containers the savepoint will cache.
+            artifacts:
+                type: array
+                items:
+                    $ref: "#/$defs/pipeline_artifact"
+                minItems: 1
+            analyses:
+                type: array
+                items:
+                    $ref: "#/$defs/pipeline_analysis"
+                minItems: 1
+
+    pipeline_analysis:
+        type: object
+        required:
+            - analysis
+            - containers
+        additionalProperties: false
+        properties:
+            name:
+                type: string
+                description:
+                    The name that can be used from the CLI to refer to the analysis
+                    in this point of the pipeline. If not passed it defaults to the name of
+                    the analysis.
+            analysis:
+                type: string
+                description: The name of the analysis to run.
+            containers:
+                $ref: "#/$defs/pipeline_args"
+                description: The names of the containers the analysis will need.
+
+    pipeline_artifact:
+        type: object
+        required:
+            - name
+            - container
+        additionalProperties: false
+        properties:
+            name:
+                type: string
+                description: The name of the artifact.
+                example: my_artifact
+            container:
+                type: string
+                description: The container that will produce the artifact.
+                example: my_container
+
+    # JSON API definitions (daemon.py)
+    json_response:
+        type: object
+        required:
+            - code
+            - body
+        properties:
+            code:
+                type: integer
+                description: HTTP status code
+            body:
+                description: Response body content
+            headers:
+                type: object
+                additionalProperties:
+                    type: string
+                description: Response headers
+            websocket:
+                type: array
+                items: {}
+                description: List of notifications to send through websockets
+
+    json_get_epoch_request:
+        type: object
+        required:
+            - project_id
+        properties:
+            project_id:
+                type: string
+                description: Project identifier
+
+    json_get_model_request:
+        type: object
+        required:
+            - project_id
+        properties:
+            project_id:
+                type: string
+                description: Project identifier
+            token:
+                type: string
+                description: Optional authentication token
+
+    json_artifact_request:
+        type: object
+        required:
+            - project_id
+            - artifacts
+        properties:
+            project_id:
+                type: string
+                description: Project identifier
+            token:
+                type: string
+                description: Optional authentication token
+            artifacts:
+                type: object
+                additionalProperties: {}
+                description: Map of artifact names to their data
+
+    json_analyze_request:
+        type: object
+        required:
+            - project_id
+            - epoch
+            - analysis
+        properties:
+            project_id:
+                type: string
+                description: Project identifier
+            epoch:
+                type: integer
+                description: Current epoch number
+            token:
+                type: string
+                description: Optional authentication token
+            analysis:
+                type: string
+                description: Name of the analysis to run
+            configuration:
+                type: string
+                default: ""
+                description: Analysis configuration
+            pipeline_configuration:
+                type: object
+                default: {}
+                description: Pipeline configuration parameters
+            containers:
+                type: object
+                additionalProperties:
+                    type: array
+                    items: {}
+                description: Map of container names to lists of objects
+
+    json_get_epoch_response:
+        type: object
+        required:
+            - epoch
+        properties:
+            epoch:
+                type: integer
+                description: Current epoch number
+
+    json_get_model_response:
+        type: object
+        required:
+            - epoch
+            - model_type
+            - mime_type
+            - is_text
+            - model
+        properties:
+            epoch:
+                type: integer
+                description: Current epoch number
+            model_type:
+                type: string
+                description: Type name of the model class
+            mime_type:
+                type: string
+                description: MIME type of the model
+            is_text:
+                type: boolean
+                description: Whether the model is text-based
+            model:
+                type: string
+                description: Model data (UTF-8 string or base64 encoded)
+
+    json_container_info:
+        type: object
+        required:
+            - name
+            - kind
+            - mime_type
+            - is_text
+        properties:
+            name:
+                type: string
+                description: Container name
+            kind:
+                type: string
+                description: Serialized kind
+            mime_type:
+                type: string
+                description: Container MIME type
+            is_text:
+                type: boolean
+                description: Whether container content is text
+
+    json_artifact_info:
+        type: object
+        required:
+            - name
+            - container_name
+            - container_type
+            - cachable
+        properties:
+            name:
+                type: string
+                description: Artifact name
+            container_name:
+                type: string
+                description: Name of the container
+            container_type:
+                type: string
+                description: Container type class name
+            cachable:
+                type: boolean
+                description: Whether artifact is cachable
+
+    json_kind_info:
+        type: object
+        required:
+            - name
+        properties:
+            name:
+                type: string
+                description: Serialized kind name
+            parent:
+                type: string
+                nullable: true
+                description: Parent kind name (null if no parent)
+
+    json_get_pipeline_response:
+        type: object
+        required:
+            - version
+            - pipeline
+            - containers
+            - artifacts
+            - kinds
+        properties:
+            version:
+                type: string
+                description: Pipeline version
+            pipeline:
+                description: Pipeline YAML configuration
+            containers:
+                type: array
+                items:
+                    $ref: "#/$defs/json_container_info"
+                description: List of available containers
+            artifacts:
+                type: array
+                items:
+                    $ref: "#/$defs/json_artifact_info"
+                description: List of available artifacts
+            kinds:
+                type: array
+                items:
+                    $ref: "#/$defs/json_kind_info"
+                description: List of available kinds
+
+    json_artifact_response:
+        type: object
+        required:
+            - artifacts
+        properties:
+            artifacts:
+                type: object
+                additionalProperties: {}
+                description: Map of artifact names to their computed data
+
+    json_analyze_response:
+        type: object
+        required:
+            - epoch
+            - diff
+        properties:
+            epoch:
+                type: integer
+                description: New epoch number
+            diff:
+                type: string
+                description: Model diff as string
+
+    json_websocket_notification:
+        type: object
+        required:
+            - type
+        properties:
+            type:
+                type: string
+                enum: [analysis]
+                description: Notification type
+            analysis:
+                type: string
+                description: Analysis name (for analysis notifications)
+            epoch:
+                type: integer
+                description: New epoch number (for analysis notifications)
+            diff:
+                type: string
+                description: Model diff (for analysis notifications)
+            invalidated:
+                type: array
+                items: {}
+                description: List of invalidated cachable artifacts
+
+    json_error_response:
+        type: object
+        required:
+            - msg
+        properties:
+            msg:
+                type: string
+                description: Error message
+            available_artifacts:
+                type: array
+                items:
+                    type: string
+                description: List of available artifacts (for artifact errors)
+            available_analyses:
+                type: array
+                items:
+                    type: string
+                description: List of available analyses (for analysis errors)
+            available_containers:
+                type: array
+                items:
+                    type: string
+                description: List of available containers (for container errors)
+
+    # HTTP API definitions (app.py)
+    http_headers:
+        type: object
+        properties:
+            x-projectid:
+                type: string
+                description: Project identifier header
+        additionalProperties:
+            type: string
+
+    http_error_response:
+        type: object
+        properties:
+            error:
+                type: string
+                description: Error message
+            traceback:
+                type: string
+                description: Error traceback
+
+    http_websocket_close_reason:
+        type: object
+        properties:
+            code:
+                type: integer
+                enum: [4000, 1011]
+                description: WebSocket close code
+            reason:
+                type: string
+                description: Close reason (JSON stringified error data or error message)
+
+    # Shared/common definitions
+    project_id:
+        type: string
+        description: Project identifier
+        pattern: "^[a-zA-Z0-9_-]+$"
+
+    auth_token:
+        type: string
+        description: Authentication token
+
+    epoch:
+        type: integer
+        minimum: 0
+        description: Version/epoch number for optimistic concurrency
+
+
+paths:
+    /api/epoch:
+        get:
+            summary: Get current epoch for a project
+            parameters:
+                - name: x-projectid
+                  in: header
+                  required: true
+                  schema:
+                      type: string
+                  description: Project identifier
+            responses:
+                '200':
+                    description: Success
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: "#/$defs/json_response"
+                                    - type: object
+                                      properties:
+                                          body:
+                                              $ref: "#/$defs/json_get_epoch_response"
+
+    /api/model:
+        get:
+            summary: Get model for a project
+            parameters:
+                - name: x-projectid
+                  in: header
+                  required: true
+                  schema:
+                      type: string
+                  description: Project identifier
+            responses:
+                '200':
+                    description: Success
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: "#/$defs/json_response"
+                                    - type: object
+                                      properties:
+                                          body:
+                                              $ref: "#/$defs/json_get_model_response"
+
+    /api/pipeline:
+        get:
+            summary: Get pipeline information
+            responses:
+                '200':
+                    description: Success
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: "#/$defs/json_response"
+                                    - type: object
+                                      properties:
+                                          body:
+                                              $ref: "#/$defs/json_get_pipeline_response"
+
+    /api/artifact:
+        post:
+            summary: Compute artifacts
+            parameters:
+                - name: x-projectid
+                  in: header
+                  required: true
+                  schema:
+                      type: string
+                  description: Project identifier
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/$defs/json_artifact_request"
+            responses:
+                '200':
+                    description: Success
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: "#/$defs/json_response"
+                                    - type: object
+                                      properties:
+                                          body:
+                                              $ref: "#/$defs/json_artifact_response"
+                '400':
+                    description: Bad Request
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: "#/$defs/json_response"
+                                    - type: object
+                                      properties:
+                                          body:
+                                              $ref: "#/$defs/json_error_response"
+
+    /api/analysis:
+        post:
+            summary: Run analysis
+            parameters:
+                - name: x-projectid
+                  in: header
+                  required: true
+                  schema:
+                      type: string
+                  description: Project identifier
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/$defs/json_analyze_request"
+            responses:
+                '200':
+                    description: Success
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: "#/$defs/json_response"
+                                    - type: object
+                                      properties:
+                                          body:
+                                              $ref: "#/$defs/json_analyze_response"
+                                          websocket:
+                                              type: array
+                                              items:
+                                                  $ref: "#/$defs/json_websocket_notification"
+                '400':
+                    description: Bad Request
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: "#/$defs/json_response"
+                                    - type: object
+                                      properties:
+                                          body:
+                                              $ref: "#/$defs/json_error_response"
+
+    /api/subscribe:
+        websocket:
+            summary: WebSocket for receiving invalidation notifications
+            parameters:
+                - name: x-projectid
+                  in: header
+                  required: true
+                  schema:
+                      type: string
+                  description: Project identifier
+            description: WebSocket endpoint for receiving real-time notifications about analysis results and invalidations
+            responses:
+                '101':
+                    description: WebSocket connection established
+                '400':
+                    description: Client error with JSON error data
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/$defs/json_error_response"
+                '500':
+                    description: Internal server error
+                        $ref: '#/components/schemas/ErrorResponse'

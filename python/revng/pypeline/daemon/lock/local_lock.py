@@ -9,7 +9,9 @@ from dataclasses import dataclass
 from collections import defaultdict
 
 from . import Lock, AlreadyLockedError, WrongEpoch, LockNotFoundError, LockExpiredError
-from revng.internal.daemon2.utils import ProjectID, Epoch
+from revng.pypeline.storage.storage_provider import ProjectID
+from revng.pypeline.daemon.utils import Epoch
+
 
 @dataclass(slots=True)
 class LockInfo:

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from .utils import ProjectID
+from revng.pypeline.storage.storage_provider import ProjectID
 
 logger = logging.getLogger(__name__)
 

@@ -20,11 +20,10 @@ class BasicException(Exception):
         self.code = status_code
         self.data = data
 
-ProjectID = str
 Epoch = int
 
 def compute_objects(
-    model: Model,
+    model: ReadOnlyModel,
     kind: Kind,
     objects: Optional[list[str]],
 ) -> ObjectSet:
@@ -50,7 +49,7 @@ def compute_objects(
             )
 
         # Deserialize the object ID
-        obj_ty = get_singleton(ObjectID)
+        obj_ty = get_singleton(ObjectID) # type: ignore [type-abstract]
         try:
             obj_id = obj_ty.deserialize(obj)
         except ValueError as e:

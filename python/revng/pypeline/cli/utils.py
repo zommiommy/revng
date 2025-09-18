@@ -1,36 +1,26 @@
 #
 # This file is distributed under the MIT License. See LICENSE.md for details.
 #
-
 import importlib
 import importlib.util
 import logging
 import os
 import re
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import urlparse
 
 import click
 
 from revng.pypeline.container import ContainerDeclaration
 from revng.pypeline.model import ReadOnlyModel
 from revng.pypeline.object import Kind, ObjectID, ObjectSet
-from revng.pypeline.storage import storage_provider_factory
-from revng.pypeline.storage.storage_provider import StorageProvider
+from revng.pypeline.storage.storage_provider import StorageProviderFactory
 from revng.pypeline.task.task import TaskArgument, TaskArgumentAccess
 from revng.pypeline.utils.registry import get_registry, get_singleton
 
 logger = logging.getLogger(__name__)
-
-
-def default_storage_provider(model_path: str) -> StorageProvider:
-    """
-    While we figure out how to configure the storage provider, we use a default
-    SQLite3 storage provider. This is a temporary solution, and we should
-    eventually allow the user to configure the storage provider using an
-    environment variable or a configuration file.
-    """
-    return storage_provider_factory(model_path, os.environ.get("PYPELINE_STORAGE"))
 
 
 class RegistryChoice(click.Choice):
@@ -71,6 +61,7 @@ class EagerParsedPath(click.Path):
     useful auto-completion or validation.
     The cli and other arguments can retrieve the parsed value from the context object
     using the name of the argument, like `ctx.obj['pipebox']`.
+    Additionally, it stores the path used to parse the value as `ctx.obj[self.name + "_path"]`.
     """
 
     def __init__(
@@ -91,20 +82,23 @@ class EagerParsedPath(click.Path):
     def convert(
         self, value: Any, param: Optional[click.Parameter], ctx: Optional[click.Context]
     ) -> Any:
-        res = super().convert(value, param, ctx)
-        if isinstance(res, str):
-            # If the value is a string, we parse it using the provided parser
-            res = self.parser(res)
-            if ctx is not None:
-                if ctx.obj is None:
-                    ctx.obj = {}
-                if self.name in ctx.obj:
-                    raise ValueError(
-                        f"Argument `{self.name}` already set in context, "
-                        "this is likely a bug in the code."
-                    )
-                # Store the parsed value in the context object
-                ctx.obj[self.name] = res
+        path = super().convert(value, param, ctx)
+        if not isinstance(path, str):
+            raise ValueError(f"Invalid path: {path!r}")
+        # If the value is a string, we parse it using the provided parser
+        res = self.parser(path)
+        if ctx is not None:
+            if ctx.obj is None:
+                ctx.obj = {}
+            if self.name in ctx.obj:
+                raise ValueError(
+                    f"Argument `{self.name}` already set in context, "
+                    "this is likely a bug in the code."
+                )
+            # Store the parsed value in the context object
+            ctx.obj[self.name] = res
+            # And also store the path to the parsed value
+            ctx.obj[self.name + "_path"] = Path(path).resolve()
         return res
 
 
@@ -152,6 +146,41 @@ class LazyGroup(click.Group):
                 f"Lazy loading of {import_path} failed by returning " "a non-command object"
             )
         return cmd_object
+
+
+class StorageProviderUrl(click.ParamType):
+    """A custom type for the URL of a storage provider that is validated."""
+
+    name = "url"
+
+    def convert(self, value, param, ctx):
+        # Ensure we are dealing with a string
+        if not isinstance(value, str):
+            self.fail(
+                f"Expected a string, but got value of type {type(value).__name__}.", param, ctx
+            )
+
+        try:
+            parsed_url = urlparse(value)
+        except ValueError:
+            # urlparse can raise ValueError on rare malformed inputs
+            self.fail(f"'{value}' could not be parsed as a URL.", param, ctx)
+
+        # get all the registered providers
+        allowed_schemes = {
+            factory.protocol().lower() for factory in get_registry(StorageProviderFactory).values()
+        }
+        # check that the scheme is supported
+        if parsed_url.scheme.lower() not in allowed_schemes:
+            allowed_str = ", ".join(sorted(allowed_schemes))
+            self.fail(
+                f"URL scheme '{parsed_url.scheme}' is not supported. "
+                f"Allowed schemes are: {allowed_str}.",
+                param,
+                ctx,
+            )
+        # If all checks pass, return the original, validated string
+        return value
 
 
 def normalize_whitespace(text: str) -> str:
@@ -281,3 +310,28 @@ def compute_objects(
                 objects={obj_id_ty.deserialize(obj) for obj in objects.split(",") if obj.strip()},
             )
     return model.all_objects(kind)
+
+
+# Options that are common to multiple commands
+project_id_option = click.option(
+    "--project-id",
+    type=str,
+    help=("Project id to use for the storage provider."),
+    default=os.environ.get("PROJECT_ID"),
+    show_default=True,
+)
+
+list_objects_option = click.option(
+    "--list",
+    type=bool,
+    is_flag=True,
+    default=False,
+    help="List the available objects for each argument.",
+)
+
+token_option = click.option(
+    "--token",
+    type=str,
+    required=False,
+    help="The token to pass to the storage provider.",
+)

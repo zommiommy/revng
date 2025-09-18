@@ -72,8 +72,8 @@ def parse_savepoint(
     container_decls: dict[str, ContainerDeclaration],
 ):
     """Parse a savepoint task from the JSON value."""
-    name = task["savepoint"]["name"]
-    containers = task["savepoint"]["containers"]
+    name = task["savepoint"]
+    containers = task["containers"]
     args = []
     for container_name in containers:
         if container_name not in container_decls:
@@ -313,7 +313,7 @@ def parse_container_decls(
         if ty not in containers_registry:
             raise ValueError(
                 f"Container type {ty} is not registered, the available types "
-                "are: {list(sorted(containers_registry.keys()))}"
+                f"are: {sorted(containers_registry.keys())}"
             )
 
         container_decls[name] = ContainerDeclaration(
@@ -328,7 +328,7 @@ def schema() -> dict[str, Any]:
     Return the jsonschema for the pipeline.
     """
     root = Path(__file__).resolve().parent
-    with open(root / "pipeline_schema.yml", "r", encoding="utf-8") as f:
+    with open(root / "schema.yml", "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -336,7 +336,15 @@ def load_pipeline(values: Any) -> Pipeline:
     """
     Load a pipeline from parsed JSON / YAML / TOML.
     """
-    validator = jsonschema.Draft7Validator(schema())
+    full_schema = schema()
+
+    # Create a reference resolver to handle $ref references
+    resolver = jsonschema.RefResolver.from_schema(full_schema)
+
+    # Get the pipeline schema from $defs/pipeline
+    pipeline_schema = full_schema.get("$defs", {}).get("pipeline", full_schema)
+
+    validator = jsonschema.Draft7Validator(pipeline_schema, resolver=resolver)
     validator.validate(values)
     # Yeah the validator already checks that everything is correct, but
     # mypy doesn't
